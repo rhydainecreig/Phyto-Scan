@@ -362,7 +362,7 @@
     });
 
     const errEl = document.getElementById('fileError');
-    if(errEl && !errEl.hidden && currentErrorKey) errEl.textContent = t[currentErrorKey];
+    if(errEl && !errEl.hidden && currentErrorKey){ const m = /\(ref: [^)]*\)$/.exec(errEl.textContent); errEl.textContent = t[currentErrorKey] + (m ? ' ' + m[0] : ''); }
 
     buildGuide();
     renderHistory();
@@ -600,13 +600,13 @@
 
   let currentErrorKey = null; // 'fileErrorMsg' | 'noLeafMsg' — keeps the message in sync with language switches
 
-  function showError(key){
+  function showError(key, ref){
     loadingNote.classList.remove('active');
     setCaptureBusy(false);
     const el = document.getElementById('fileError');
     if(el){
       currentErrorKey = key;
-      el.textContent = I18N[currentLang][key];
+      el.textContent = I18N[currentLang][key] + (ref ? ` (ref: ${ref})` : '');
       el.hidden = false;
     }
   }
@@ -689,6 +689,8 @@
     });
   }
 
+  let lastAIRef = ''; // short reason code for the last failed AI call
+
   async function callAIOnce(dataUrl){
     const parts = dataUrlToParts(dataUrl);
     if(!parts) return null;
@@ -702,14 +704,21 @@
         signal: controller.signal
       });
       clearTimeout(timer);
-      if(!resp.ok) return null;
+      if(!resp.ok){
+        let ref = String(resp.status);
+        try{ const j = await resp.json(); if(j && j.ref) ref = j.ref; }catch(e){}
+        lastAIRef = ref;
+        return null;
+      }
       const json = await resp.json();
-      if(!json || json.error) return null;
+      if(!json || json.error){ lastAIRef = (json && json.ref) || 'error'; return null; }
       if(json.isLeaf === false) return { isLeaf:false };
-      if(!CONDITION_KEYS.includes(json.conditionKey)) return null;
+      if(!CONDITION_KEYS.includes(json.conditionKey)){ lastAIRef = 'invalid'; return null; }
+      lastAIRef = '';
       return json;
     }catch(e){
       clearTimeout(timer);
+      lastAIRef = (e && e.name === 'AbortError') ? 'timeout' : 'network';
       return null;
     }
   }
@@ -819,7 +828,7 @@
 
     // Strict leaf gate: a diagnosis is only ever shown when the AI has
     // confirmed the photo is a leaf. If it can't confirm, nothing is shown.
-    if(!aiResult){ showError('checkFailMsg'); return; }
+    if(!aiResult){ showError('checkFailMsg', lastAIRef); return; }
     if(aiResult.isLeaf === false){ rejectNonLeaf(); return; }
 
     if(aiResult){

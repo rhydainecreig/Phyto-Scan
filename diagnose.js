@@ -44,7 +44,7 @@ module.exports = async function handler(req, res) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     console.error('ANTHROPIC_API_KEY is not set');
-    res.status(500).json({ error: 'Server not configured' });
+    res.status(500).json({ error: 'Server not configured', ref: 'nokey' });
     return;
   }
 
@@ -76,7 +76,7 @@ module.exports = async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-5-5',
-        max_tokens: 500,
+        max_tokens: 1000,
         system: buildSystemPrompt(),
         messages: [
           {
@@ -93,35 +93,39 @@ module.exports = async function handler(req, res) {
     if (!response.ok) {
       const errText = await response.text();
       console.error('Anthropic API error:', response.status, errText);
-      res.status(502).json({ error: 'AI service unavailable' });
+      res.status(502).json({ error: 'AI service unavailable', ref: String(response.status) });
       return;
     }
 
     const data = await response.json();
     const textBlock = (data.content || []).find(b => b.type === 'text');
     if (!textBlock) {
-      res.status(502).json({ error: 'No response from AI' });
+      res.status(502).json({ error: 'No response from AI', ref: 'empty' });
       return;
     }
 
     let parsed;
     try {
-      const cleaned = textBlock.text.replace(/```json|```/g, '').trim();
-      parsed = JSON.parse(cleaned);
+      // Take everything from the first { to the last } so stray words or
+      // code fences around the JSON can't break parsing.
+      const raw = textBlock.text;
+      const first = raw.indexOf('{');
+      const last = raw.lastIndexOf('}');
+      parsed = JSON.parse(raw.slice(first, last + 1));
     } catch (e) {
       console.error('Failed to parse AI response:', textBlock.text);
-      res.status(502).json({ error: 'Could not parse AI response' });
+      res.status(502).json({ error: 'Could not parse AI response', ref: 'parse' });
       return;
     }
 
-    const leafConfidence = Number(parsed.leafConfidence) || 0;
+    const leafConfidence = parsed.leafConfidence === undefined ? 100 : (Number(parsed.leafConfidence) || 0);
     if (parsed.isLeaf !== true || leafConfidence < 75) {
       res.status(200).json({ isLeaf: false });
       return;
     }
 
     if (!CONDITION_KEYS.includes(parsed.conditionKey)) {
-      res.status(502).json({ error: 'Invalid classification' });
+      res.status(502).json({ error: 'Invalid classification', ref: 'invalid' });
       return;
     }
 
@@ -144,7 +148,7 @@ module.exports = async function handler(req, res) {
     res.status(200).json(safeResult);
   } catch (e) {
     console.error('diagnose handler error:', e);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: 'Server error', ref: 'server' });
   }
 };
 

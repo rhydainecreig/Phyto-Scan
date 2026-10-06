@@ -749,11 +749,6 @@
     return scores;
   }
 
-  // Offline fallback only — needs some real green / yellow-green in frame.
-  function looksLeafLike(ratio){
-    return (ratio.green + ratio.yellow) >= 0.12;
-  }
-
   async function analyzeImage(img){
     const size = 220;
     const canvas = document.createElement('canvas');
@@ -822,10 +817,10 @@
     let aiExplanation = null;
     const aiResult = await callAIDiagnosis(previewImg.src);
 
-    // Leaf gate: the AI decides when it's reachable; otherwise a loose color
-    // check still turns away obviously non-plant photos.
-    if(aiResult && aiResult.isLeaf === false){ rejectNonLeaf(); return; }
-    if(!aiResult && !looksLeafLike(ratio)){ showError('checkFailMsg'); return; }
+    // Strict leaf gate: a diagnosis is only ever shown when the AI has
+    // confirmed the photo is a leaf. If it can't confirm, nothing is shown.
+    if(!aiResult){ showError('checkFailMsg'); return; }
+    if(aiResult.isLeaf === false){ rejectNonLeaf(); return; }
 
     if(aiResult){
       scores = mergeAIScores(aiResult, heuristicScores);

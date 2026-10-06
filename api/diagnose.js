@@ -17,14 +17,14 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // ~8MB raw, generous for a base64 leaf
 
 function buildSystemPrompt() {
   return `You are assisting a plant-leaf field guide app used by non-experts, possibly on real crops they depend on.
-First decide whether the photo actually shows a plant leaf as its main subject. A leaf held in a hand, or lying on soil or a table, counts. Flowers, fruit, bare stems, whole trees seen from far away, people, animals, objects, screens, drawings, and blank or unreadable images do NOT count.
+First decide whether the photo actually shows a plant leaf as its main subject. A leaf held in a hand, or lying on soil or a table, counts. Be strict: flowers, fruit, bare stems, bark, soil, lawns or fields of grass, whole plants or trees seen from far away, plastic or artificial leaves, leaf drawings, paintings, leaf patterns on fabric or objects, photos of screens, people, animals, food, objects, and blank or unreadable images do NOT count. Only say it is a leaf when you are highly certain.
 
 If it IS a leaf, classify it into exactly ONE of these categories: ${CONDITION_KEYS.join(', ')}.
 
 Respond with ONLY a raw JSON object — no markdown fences, no commentary before or after.
 If the photo is NOT a leaf, respond with exactly: {"isLeaf": false}
 If it IS a leaf, respond in exactly this shape:
-{"isLeaf": true, "conditionKey": "<one of the categories above>", "confidence": <integer 0-100>, "explanation": "<2-3 sentence plain-language description in the requested language of what you actually see in THIS photo and why it points to that category>", "alternates": [{"key": "<category>", "confidence": <integer 0-100>}, {"key": "<category>", "confidence": <integer 0-100>}]}
+{"isLeaf": true, "leafConfidence": <integer 0-100, how sure you are this is a real plant leaf>, "conditionKey": "<one of the categories above>", "confidence": <integer 0-100>, "explanation": "<2-3 sentence plain-language description in the requested language of what you actually see in THIS photo and why it points to that category>", "alternates": [{"key": "<category>", "confidence": <integer 0-100>}, {"key": "<category>", "confidence": <integer 0-100>}]}
 
 Rules:
 - "confidence" must reflect how clearly the visual evidence in this specific photo matches the category. Do not default to a high number out of habit — a blurry, poorly lit, or ambiguous photo should get a LOW confidence score.
@@ -44,7 +44,7 @@ module.exports = async function handler(req, res) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     console.error('ANTHROPIC_API_KEY is not set');
-    res.status(500).json({ error: 'Server not configured' });
+    res.status(500).json({ error: 'Server not configured', ref: 'nokey' });
     return;
   }
 
@@ -76,7 +76,7 @@ module.exports = async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-5-5',
-        max_tokens: 500,
+        max_tokens: 1000,
         system: buildSystemPrompt(),
         messages: [
           {
@@ -93,34 +93,39 @@ module.exports = async function handler(req, res) {
     if (!response.ok) {
       const errText = await response.text();
       console.error('Anthropic API error:', response.status, errText);
-      res.status(502).json({ error: 'AI service unavailable' });
+      res.status(502).json({ error: 'AI service unavailable', ref: String(response.status) });
       return;
     }
 
     const data = await response.json();
     const textBlock = (data.content || []).find(b => b.type === 'text');
     if (!textBlock) {
-      res.status(502).json({ error: 'No response from AI' });
+      res.status(502).json({ error: 'No response from AI', ref: 'empty' });
       return;
     }
 
     let parsed;
     try {
-      const cleaned = textBlock.text.replace(/```json|```/g, '').trim();
-      parsed = JSON.parse(cleaned);
+      // Take everything from the first { to the last } so stray words or
+      // code fences around the JSON can't break parsing.
+      const raw = textBlock.text;
+      const first = raw.indexOf('{');
+      const last = raw.lastIndexOf('}');
+      parsed = JSON.parse(raw.slice(first, last + 1));
     } catch (e) {
       console.error('Failed to parse AI response:', textBlock.text);
-      res.status(502).json({ error: 'Could not parse AI response' });
+      res.status(502).json({ error: 'Could not parse AI response', ref: 'parse' });
       return;
     }
 
-    if (parsed.isLeaf === false) {
+    const leafConfidence = parsed.leafConfidence === undefined ? 100 : (Number(parsed.leafConfidence) || 0);
+    if (parsed.isLeaf !== true || leafConfidence < 75) {
       res.status(200).json({ isLeaf: false });
       return;
     }
 
     if (!CONDITION_KEYS.includes(parsed.conditionKey)) {
-      res.status(502).json({ error: 'Invalid classification' });
+      res.status(502).json({ error: 'Invalid classification', ref: 'invalid' });
       return;
     }
 
@@ -143,7 +148,7 @@ module.exports = async function handler(req, res) {
     res.status(200).json(safeResult);
   } catch (e) {
     console.error('diagnose handler error:', e);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: 'Server error', ref: 'server' });
   }
 };
 

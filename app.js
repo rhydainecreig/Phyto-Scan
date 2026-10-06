@@ -258,6 +258,7 @@
       welcomeLoadingLabel: "Preparing your field kit…",
       fileErrorMsg: "Couldn't read that photo. Try a different image, or take a new one.",
       noLeafMsg: "No leaf detected. Please scan a leaf — fill the frame with a single leaf and try again.",
+      checkFailMsg: "Couldn't check this photo right now. Please check your connection and try again.",
       fieldGuideTitle: "Field Guide",
       fieldGuideSub: "Common conditions this tool reads for",
       tapToLearnMore: "Tap to learn more →",
@@ -301,6 +302,7 @@
       welcomeLoadingLabel: "Inihahanda ang iyong field kit…",
       fileErrorMsg: "Hindi mabasa ang larawang iyon. Sumubok ng ibang larawan, o kumuha ng bago.",
       noLeafMsg: "Walang nakitang dahon. Mangyaring mag-scan ng dahon — punuin ang frame ng isang dahon at subukan muli.",
+      checkFailMsg: "Hindi ma-check ang larawang ito ngayon. Pakisuri ang koneksyon at subukan muli.",
       fieldGuideTitle: "Gabay sa Bukid",
       fieldGuideSub: "Karaniwang mga kondisyong nababasa ng tool na ito",
       tapToLearnMore: "Pindutin para malaman pa →",
@@ -669,11 +671,29 @@
     return { mediaType: match[1], base64: match[2] };
   }
 
-  async function callAIDiagnosis(dataUrl){
+  // Shrink big phone photos before upload — full-size shots exceed server
+  // request limits and are the main reason the AI call used to fail.
+  function downscaleDataUrl(dataUrl, maxSide){
+    return new Promise(resolve => {
+      const im = new Image();
+      im.onload = () => {
+        const scale = Math.min(1, maxSide / Math.max(im.width, im.height));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(im.width * scale));
+        c.height = Math.max(1, Math.round(im.height * scale));
+        c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/jpeg', 0.85));
+      };
+      im.onerror = () => resolve(dataUrl);
+      im.src = dataUrl;
+    });
+  }
+
+  async function callAIOnce(dataUrl){
     const parts = dataUrlToParts(dataUrl);
     if(!parts) return null;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
+    const timer = setTimeout(() => controller.abort(), 25000);
     try{
       const resp = await fetch('/api/diagnose', {
         method: 'POST',
@@ -692,6 +712,13 @@
       clearTimeout(timer);
       return null;
     }
+  }
+
+  async function callAIDiagnosis(dataUrl){
+    const small = await downscaleDataUrl(dataUrl, 1024);
+    let result = await callAIOnce(small);
+    if(!result) result = await callAIOnce(small); // one retry
+    return result;
   }
 
   // Blend the AI's classification (one primary key + a few alternates,
@@ -798,7 +825,7 @@
     // Leaf gate: the AI decides when it's reachable; otherwise a loose color
     // check still turns away obviously non-plant photos.
     if(aiResult && aiResult.isLeaf === false){ rejectNonLeaf(); return; }
-    if(!aiResult && !looksLeafLike(ratio)){ rejectNonLeaf(); return; }
+    if(!aiResult && !looksLeafLike(ratio)){ showError('checkFailMsg'); return; }
 
     if(aiResult){
       scores = mergeAIScores(aiResult, heuristicScores);
